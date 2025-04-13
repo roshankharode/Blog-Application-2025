@@ -1,0 +1,103 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'frontend_image_Tag', defaultValue: '', description: 'Setting Docker image version to control versioning on Docker Hub')
+        string(name: 'backend_image_Tag', defaultValue: '', description: 'Setting backend Docker image tag to control over Docker Hub')
+    }
+
+    stages {
+        stage('Validating Parameters') {
+            steps {
+                script {
+                    if (params.frontend_image_Tag == '' || params.backend_image_Tag == '') {
+                        error('Please enter valid Tag No for better versioning control over Docker Hub')
+                    }
+                }
+            }
+        }
+
+        stage('Updating System') {
+            steps {
+                sh '''
+                sudo apt-get update -y
+                '''
+            }
+        }
+
+        stage('Installing Docker') {
+            steps {
+                sh '''
+                if ! command -v docker &> /dev/null; then
+                    sudo apt-get install -y docker.io
+                fi
+                sudo usermod -aG docker $USER
+                '''
+            }
+        }
+
+        stage('Database Installation') {
+            steps {
+                sh '''
+                sudo docker network inspect wanderlust-network >/dev/null 2>&1 || sudo docker network create wanderlust-network
+                sudo docker rm -f mongodb redis-service backend frontend || true
+                sudo docker run -d --name mongodb --network wanderlust-network -p 27017:27017 mongo
+                sudo docker run -d --name redis-service --network wanderlust-network -p 6379:6379 redis
+                '''
+            }
+        }
+
+        stage('Code Checkout - Git') {
+            steps {
+                sh '''
+                rm -rf Blog-Application-2025
+                git clone https://github.com/roshankharode/Blog-App-2025-Devops-Proj.git
+                '''
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                sh '''
+                sudo docker build -t backend:${backend_image_Tag} ./Blog-App-2025-Devops-Proj/Source-Code/backend
+                sudo docker build -t frontend:${frontend_image_Tag} ./Blog-App-2025-Devops-Proj/Source-Code/frontend
+                '''
+            }
+        }
+
+        stage('Push to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                    echo "$DOCKER_PASS" | sudo docker login -u $DOCKER_USER --password-stdin
+
+                    # Tagging images with Docker Hub username
+                    sudo docker tag backend:${backend_image_Tag} $DOCKER_USER/backend:${backend_image_Tag}
+                    sudo docker tag frontend:${frontend_image_Tag} $DOCKER_USER/frontend:${frontend_image_Tag}
+
+                    # Pushing to Docker Hub
+                    sudo docker push $DOCKER_USER/backend:${backend_image_Tag}
+                    sudo docker push $DOCKER_USER/frontend:${frontend_image_Tag}
+                    '''
+                }
+            }
+        }
+
+        stage('Running Containers') {
+            steps {
+                sh '''
+                sudo docker run -d --name backend --network wanderlust-network -p 9090:9090 backend:${backend_image_Tag}
+                sudo docker run -d --name frontend --network wanderlust-network -p 5173:5173 frontend:${frontend_image_Tag}
+                '''
+            }
+        }
+
+        stage('Build Complete') {
+            steps {
+                echo "✅ Build completed with tags - Backend: ${params.backend_image_Tag}, Frontend: ${params.frontend_image_Tag}"
+            }
+        }
+    }
+}
+
+
